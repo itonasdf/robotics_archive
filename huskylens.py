@@ -1,16 +1,15 @@
 """
 HuskyLens Library for Pybricks MicroPython
-Supports EV3 and SPIKE Prime (requires Pybricks 4.0 firmware)
+Supports EV3 and SPIKE Prime (requires Pybricks 4.0 beta firmware)
 Only supports HuskyLens V1, as we does not have V2 hardware
 Built by itonasd
 """
  
 from pybricks.iodevices import UARTDevice
 from pybricks.parameters import Port
-import struct
+from pybricks.tools import wait
 from micropython import const
-from time import sleep
-from typing import Iterable
+import struct
 
 HEADER = b"\x55\xaa\x11"
 CMD_REQUEST_BLOCKS_BY_ID = const(0x27)
@@ -45,26 +44,14 @@ class Block:
         self.id, self.confidence, self.name, self.content = id, confidence, name, content
 
     def __repr__(self):
-        parts = [
-            "Block(x=%d, y=%d, w=%d, h=%d, id=%d"
-            % (self.x, self.y, self.width, self.height, self.id)
-        ]
-        if self.confidence: parts.append(", conf=%d" % self.confidence)
-        if self.name: parts.append(", name='%s'" % self.name)
-        if self.content: parts.append(", content='%s'" % self.content)
-        parts.append(")")
-        return "".join(parts)
+        return (
+            "(x=%4d, y=%4d, w=%4d, h=%4d, id=%d, area=%5d, ratio=%.2f)"
+            % (self.x, self.y, self.width, self.height, self.id, self.area(), self.ratio())
+        )
     
-    @property
-    def center_x(self) -> int: return self.x + self.width // 2
-
-    @property
-    def center_y(self) -> int: return self.y + self.height // 2
-
-    @property
+    def cx(self) -> int: return self.x + self.width // 2
+    def cy(self) -> int: return self.y + self.height // 2
     def area(self) -> int: return self.width * self.height
-
-    @property
     def ratio(self) -> int: return self.width / self.height if self.height else 0
 
 
@@ -73,7 +60,7 @@ class Huskylens:
         self.huskylens = UARTDevice(port, 9600)
         self.cmd_buffer = bytearray(256)
 
-    def checksum(self, data: Iterable[int]) -> int:
+    def checksum(self, data) -> int:
         return sum(data) & 0xFF
     
     def flush(self) -> None:
@@ -89,7 +76,7 @@ class Huskylens:
                 chunk = self.huskylens.read()
                 if chunk: data.extend(chunk)
             if len(data) >= size: return bytes(data[:size])
-            sleep(0.001)
+            wait(1)
         return bytes(data)
 
     def readv1(self) -> tuple[int | None, bytes | None]:
@@ -119,20 +106,22 @@ class Huskylens:
         checksum_pos = 5 + payload_length 
         buffer = self.cmd_buffer
 
-        buffer[0:3] = HEADER
+        buffer[0] = 0x55
+        buffer[1] = 0xAA
+        buffer[2] = 0x11
         buffer[3] = payload_length
         buffer[4] = command
 
-        if payload: buffer[5 : 5 + payload_length] = payload
+        if payload:
+            for i in range(payload_length): buffer[5 + i] = payload[i]
         buffer[checksum_pos] = self.checksum(memoryview(buffer[:checksum_pos]))
-
         self.huskylens.write(bytes(buffer[: checksum_pos + 1]))
 
     def ok(self, retries: int = 10) -> bool:
         for _ in range(retries):
             cmd, _ = self.readv1()
             if cmd == CMD_RETURN_OK: return True
-            sleep(0.01)
+            wait(10)
         return False
 
     def connected(self) -> bool:
