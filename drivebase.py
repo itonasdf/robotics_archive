@@ -8,6 +8,7 @@ from pybricks.parameters import Color
 from pybricks.tools import StopWatch
 from pybricks.hubs import PrimeHub
 from pybricks.pupdevices import Motor, ColorSensor
+from pybricks.tools import wait
 from micropython import const
 from math import pi
 
@@ -58,9 +59,10 @@ class MissionMotor:
 class DriveBaseFramework:
     def __init__(
         self, left_motor: Motor, right_motor: Motor, color_sensor: ColorSensor, hub: PrimeHub,
-        forward_params, linetrace_params, turn_params, wheel_diameter: int
+        forward_params, linetrace_params, turn_params, wheel_diameter: int, operate_frequency: int
     ):
         self.target_heading = 0
+        self.target_degree = 0
         self.controller = PIDController()
         self.hub = hub
         self.forward_params = forward_params
@@ -70,12 +72,17 @@ class DriveBaseFramework:
         self.right_motor = right_motor
         self.color_sensor = color_sensor
         self.mm2deg = 360 / (pi * wheel_diameter)
+        self.dt = 1 / operate_frequency
+        self.controller.dt = self.dt
         self.concurrent_queue = []
 
     def resetEnconder(self) -> None:
         self.controller.reset()
         self.left_motor.reset_angle(0)
         self.right_motor.reset_angle(0)
+
+    def getEncoder(self) -> int:
+        return (abs(self.left_motor.angle()) + abs(self.right_motor.angle())) / 2
 
     def resetImu(self) -> None:
         self.target_heading = 0
@@ -93,6 +100,8 @@ class DriveBaseFramework:
                 else: 
                     if callable(self.concurrent_queue[i][2]): self.concurrent_queue[i][2]()
                     self.concurrent_queue.pop(i)
+
+            wait(self.dt)
 
         if callable(destroying): destroying()
         else: self.stop()()
@@ -182,7 +191,15 @@ class DriveBaseFramework:
         return callback
     
     def degree(self, target: int):
-        return lambda: (abs(self.left_motor.angle()) + abs(self.right_motor.angle())) / 2 >= target
+        started = False
+        def callback() -> bool:
+            nonlocal started
+            if not started:
+                self.target_degree = target
+                started = True
+
+            return self.getEncoder() >= self.target_degree
+        return callback
 
     def mm(self, target: int):
         return self.degree(self.mm2deg * target)
