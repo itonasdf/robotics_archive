@@ -19,6 +19,10 @@ def clamp(val, min_val: float = -1.0, max_val: float = 1.0): return max(min(val,
 def nearest_hash(s: int, params: dict[int]) -> int: return min(params.keys(), key=lambda t: abs(t - s))
 
 class PIDController:
+    __slots__ = (
+        "kp", "ki", "kd", "integral_limit", "integral_deadzone", "dt", "integral", "prev_error"
+    )
+
     def __init__(self):
         self.kp = 1
         self.ki = 0
@@ -47,7 +51,31 @@ class PIDController:
 
         return (self.kp * error) + (self.ki * self.integral) + (self.kd * derivative)
 
+class ConcurrentTask:
+    __slots__ = (
+        "wait", "until", "task", "cleanup", "started"
+    )
+    
+    def __init__(self, wait, until, task, cleanup):
+        self.wait = wait
+        self.until = until
+        self.task = task
+        self.cleanup = cleanup
+        self.started = False
+
+    def update(self) -> bool:
+        if not self.started: self.started = self.wait()
+        if not self.started: return False
+        if self.until():
+            if callable(self.cleanup): self.cleanup()
+            return True
+
+        self.task()
+        return False
+
 class MissionMotor:
+    __slots__ = ("motor")
+
     def __init__(self, motor: Motor): self.motor = motor
     def move(self, speed: int): return lambda: self.motor.dc(speed)
     def stop(self): return lambda: self.motor.stop()
@@ -62,7 +90,6 @@ class DriveBaseFramework:
         forward_params, linetrace_params, turn_params, wheel_diameter: int, operate_frequency: int
     ):
         self.target_heading = 0
-        self.target_degree = 0
         self.controller = PIDController()
         self.hub = hub
         self.forward_params = forward_params
@@ -74,7 +101,7 @@ class DriveBaseFramework:
         self.mm2deg = 360 / (pi * wheel_diameter)
         self.dt = 1 / operate_frequency
         self.controller.dt = self.dt
-        self.concurrent_queue = []
+        self.concurrent_queue: list[ConcurrentTask] = []
 
     def resetEnconder(self) -> None:
         self.controller.reset()
@@ -88,24 +115,19 @@ class DriveBaseFramework:
         self.target_heading = 0
         self.hub.imu.reset_heading(0)
 
-    def runAsync(self, condition, task = None, destroying = None) -> None:
-        self.concurrent_queue.append([condition, task, destroying])
+    def runConcurrent(self, wait, until, task, cleanup = None) -> None:
+        self.concurrent_queue.append(ConcurrentTask(wait, until, task, cleanup))
 
-    def run(self, condition, task, destroying = None) -> None:
-        while not condition():
-            task()
+    def run(self, until, task, cleanup = None) -> None:
+        while not until():
             for i in range(len(self.concurrent_queue) - 1, -1, -1):
-                if not self.concurrent_queue[i][0]():
-                    if callable(self.concurrent_queue[i][1]): self.concurrent_queue[i][1]()
-                else: 
-                    if callable(self.concurrent_queue[i][2]): self.concurrent_queue[i][2]()
-                    self.concurrent_queue.pop(i)
+                if (self.concurrent_queue[i].update()): self.concurrent_queue.pop(i)
 
+            task()
             wait(self.dt)
-
-        if callable(destroying): destroying()
+        if callable(cleanup): cleanup()
         else: self.stop()()
-
+    
     def brake(self):
         def callback() -> None:
             self.left_motor.brake()
@@ -191,15 +213,7 @@ class DriveBaseFramework:
         return callback
     
     def degree(self, target: int):
-        started = False
-        def callback() -> bool:
-            nonlocal started
-            if not started:
-                self.target_degree = target
-                started = True
-
-            return self.getEncoder() >= self.target_degree
-        return callback
+        return lambda: self.getEncoder() >= target
 
     def mm(self, target: int):
         return self.degree(self.mm2deg * target)
